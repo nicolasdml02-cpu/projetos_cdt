@@ -1,22 +1,14 @@
+import os
+import sys
 import json
 import sqlite3
-import random
-import time
-import sys
-import os
-import re
-import csv
 import threading
-import webbrowser
+import datetime
 import requests
-from bs4 import BeautifulSoup
-from datetime import datetime
-
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
-# Optional dependencies handling with fallback flags
-MATPLOTLIB_AVAILABLE = False
+# Dependências Opcionais / Externas
 try:
     import matplotlib
     matplotlib.use("TkAgg")
@@ -26,7 +18,18 @@ try:
 except ImportError:
     MATPLOTLIB_AVAILABLE = False
 
-REPORTLAB_AVAILABLE = False
+try:
+    from plyer import notification
+    PLYER_AVAILABLE = True
+except ImportError:
+    PLYER_AVAILABLE = False
+
+try:
+    import pyttsx3
+    PYTTSX3_AVAILABLE = True
+except ImportError:
+    PYTTSX3_AVAILABLE = False
+
 try:
     from reportlab.lib.pagesizes import letter
     from reportlab.pdfgen import canvas as pdf_canvas
@@ -34,708 +37,681 @@ try:
 except ImportError:
     REPORTLAB_AVAILABLE = False
 
-PYTTSX3_AVAILABLE = False
-try:
-    import pyttsx3
-    PYTTSX3_AVAILABLE = True
-except ImportError:
-    PYTTSX3_AVAILABLE = False
 
-PLYER_AVAILABLE = False
-try:
-    from plyer import notification
-    PLYER_AVAILABLE = True
-except ImportError:
-    PLYER_AVAILABLE = False
-
-
-DB_NAME = "monitor_data.db"
-JSON_LOG_FILE = "activity_log.json"
+# ==========================================
+# GESTÃO DE BANCO DE DADOS E LOGS JSON
+# ==========================================
+DB_FILE = "monitor_data.db"
+LOG_FILE = "activity_log.json"
 
 def init_db():
-    """Initializes the SQLite database schema."""
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    
-    # Currency conversions history
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS currency_history (
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS metas_financeiras (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            base_currency TEXT,
-            target_currency TEXT,
-            rate REAL,
-            amount REAL,
-            converted_amount REAL,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            nome TEXT NOT NULL,
+            categoria TEXT NOT NULL,
+            valor_alvo REAL NOT NULL,
+            valor_atual REAL DEFAULT 0.0,
+            data_limite TEXT
         )
-    ''')
-    
-    # Product search history
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS product_searches (
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS conversoes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            query TEXT,
-            avg_price REAL,
-            min_price REAL,
-            max_price REAL,
-            items_found INTEGER,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            moeda_origem TEXT,
+            moeda_destino TEXT,
+            valor_origem REAL,
+            valor_convertido REAL,
+            taxa REAL,
+            data_conversao TEXT
         )
-    ''')
-
-    # Price alerts table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS price_alerts (
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS alertas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            target_type TEXT,
-            item_name TEXT,
-            target_price REAL,
-            condition TEXT,
-            is_active INTEGER DEFAULT 1,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            tipo TEXT,
+            alvo TEXT,
+            preco_alvo REAL,
+            ativo INTEGER DEFAULT 1
         )
-    ''')
-    
+    """)
     conn.commit()
     conn.close()
 
-def save_currency_log(base, target, rate, amount, converted):
-    """Saves currency conversion log to SQLite and JSON."""
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO currency_history (base_currency, target_currency, rate, amount, converted_amount)
-        VALUES (?, ?, ?, ?, ?)
-    ''', (base, target, rate, amount, converted))
-    conn.commit()
-    conn.close()
-
-    append_json_log({
-        "type": "currency",
-        "base": base,
-        "target": target,
-        "rate": rate,
-        "amount": amount,
-        "converted": converted,
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    })
-
-def save_product_search_log(query, avg_p, min_p, max_p, items_count):
-    """Saves product search metadata to SQLite and JSON."""
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO product_searches (query, avg_price, min_price, max_price, items_found)
-        VALUES (?, ?, ?, ?, ?)
-    ''', (query, avg_p, min_p, max_p, items_count))
-    conn.commit()
-    conn.close()
-
-    append_json_log({
-        "type": "product_search",
-        "query": query,
-        "avg_price": avg_p,
-        "min_price": min_p,
-        "max_price": max_p,
-        "items_found": items_count,
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    })
-
-def append_json_log(data):
-    """Appends data to the activity JSON log file."""
+def log_event_json(tipo_evento, detalhe):
+    evento = {
+        "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "tipo": tipo_evento,
+        "detalhes": detalhe
+    }
     logs = []
-    if os.path.exists(JSON_LOG_FILE):
+    if os.path.exists(LOG_FILE):
         try:
-            with open(JSON_LOG_FILE, "r", encoding="utf-8") as f:
+            with open(LOG_FILE, "r", encoding="utf-8") as f:
                 logs = json.load(f)
-        except json.JSONDecodeError:
+        except Exception:
             logs = []
-    
-    logs.append(data)
-    with open(JSON_LOG_FILE, "w", encoding="utf-8") as f:
-        json.dump(logs, f, indent=4, ensure_ascii=False)
+    logs.append(evento)
+    try:
+        with open(LOG_FILE, "w", encoding="utf-8") as f:
+            json.dump(logs, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        print(f"Erro ao salvar JSON log: {e}")
 
 
-def fetch_currency_rates():
-    """Fetches real-time rates from AwesomeAPI with fallback to mock data."""
+# ==========================================
+# API DE MOEDAS TEMPO REAL
+# ==========================================
+def obter_cotacoes():
+    """Busca cotações em tempo real via AwesomeAPI."""
     url = "https://economia.awesomeapi.com.br/last/USD-BRL,EUR-BRL,GBP-BRL,JPY-BRL,CAD-BRL,BTC-BRL"
     try:
-        response = requests.get(url, timeout=4)
-        if response.status_code == 200:
-            data = response.json()
-            return {
-                "USD": float(data["USDBRL"]["bid"]),
-                "EUR": float(data["EURBRL"]["bid"]),
-                "GBP": float(data["GBPBRL"]["bid"]),
-                "JPY": float(data["JPYBRL"]["bid"]),
-                "CAD": float(data["CADBRL"]["bid"]),
-                "BTC": float(data["BTCBRL"]["bid"]),
-                "BRL": 1.0
-            }
+        res = requests.get(url, timeout=8)
+        if res.status_code == 200:
+            return res.json()
     except Exception:
         pass
-    
-    return {
-        "USD": 5.05,
-        "EUR": 5.48,
-        "GBP": 6.38,
-        "JPY": 0.033,
-        "CAD": 3.72,
-        "BTC": 345000.00,
-        "BRL": 1.0
-    }
+    return None
 
-def convert_currency(amount, from_curr, to_curr, rates):
-    """Converts amounts dynamically between two currencies."""
-    if from_curr not in rates or to_curr not in rates:
-        raise ValueError("Moeda não suportada.")
-    
-    amount_in_brl = amount * rates[from_curr] if from_curr != "BRL" else amount
-    final_amount = amount_in_brl / rates[to_curr] if to_curr != "BRL" else amount_in_brl
-    rate_applied = rates[from_curr] / rates[to_curr]
-    
-    save_currency_log(from_curr, to_curr, rate_applied, amount, final_amount)
-    return final_amount, rate_applied
 
-def scrape_mercado_livre(query, max_items=15):
-    """Scrapes products from Mercado Livre BR."""
-    search_url = f"https://lista.mercadolivre.com.br/{query.replace(' ', '-')}"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
-    }
+# ==========================================
+# INTERFACE GRÁFICA PRINCIPAL (TKINTER)
+# ==========================================
+class MonitorApp(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Sistema Integrado de Monitoramento Financeiro & Metas")
+        self.geometry("1000x780")
+        self.minsize(900, 650)
+        self.configure(bg="#181825")
 
-    response = requests.get(search_url, headers=headers, timeout=8)
-    if response.status_code != 200:
-        raise ConnectionError(f"Não foi possível acessar o Mercado Livre (Código {response.status_code})")
+        self.speech_engine = None
+        if PYTTSX3_AVAILABLE:
+            try:
+                self.speech_engine = pyttsx3.init()
+            except Exception:
+                self.speech_engine = None
 
-    soup = BeautifulSoup(response.text, "html.parser")
-    product_cards = soup.find_all("li", class_=re.compile(r"ui-search-layout__item"))
-
-    results = []
-    for card in product_cards:
-        if len(results) >= max_items:
-            break
-            
-        title_elem = card.find("h2", class_=re.compile(r"ui-search-item__title"))
-        if not title_elem:
-            title_elem = card.find("a", class_=re.compile(r"ui-search-item__group__element"))
-        if not title_elem:
-            continue
-        title = title_elem.text.strip()
-
-        price_container = card.find("span", class_="ui-search-price__part")
-        if not price_container:
-            price_container = card.find("div", class_="ui-search-price__second-line")
+        self.setup_styles()
+        self.create_widgets()
+        self.bind_shortcuts()
         
-        if price_container:
-            amount_elem = price_container.find("span", class_="andes-money-amount__fraction")
-            cents_elem = price_container.find("span", class_="andes-money-amount__cents")
-            if amount_elem:
-                raw_amount = amount_elem.text.replace(".", "").strip()
-                cents = cents_elem.text.strip() if cents_elem else "00"
-                try:
-                    price = float(f"{raw_amount}.{cents}")
-                except ValueError:
-                    continue
-            else:
-                continue
-        else:
-            continue
+        self.atualizar_cotacoes_thread()
 
-        seller_elem = card.find("span", class_=re.compile(r"ui-search-official-store-label"))
-        if not seller_elem:
-            seller_elem = card.find("p", class_=re.compile(r"ui-search-item__group__element"))
-        seller_name = seller_elem.text.strip() if seller_elem else "Mercado Livre"
+    def setup_styles(self):
+        self.style = ttk.Style(self)
+        self.style.theme_use("clam")
+        
+        self.bg_dark = "#181825"
+        self.card_bg = "#1e1e2e"
+        self.accent = "#89b4fa"
+        self.fg_text = "#cdd6f4"
 
-        link_elem = card.find("a", class_=re.compile(r"ui-search-link"))
-        link = link_elem["href"] if link_elem and "href" in link_elem.attrs else "#"
+        self.style.configure(".", background=self.bg_dark, foreground=self.fg_text, font=("Segoe UI", 10))
+        self.style.configure("TNotebook", background=self.bg_dark, borderwidth=0)
+        self.style.configure("TNotebook.Tab", background="#313244", foreground=self.fg_text, padding=[12, 8], font=("Segoe UI", 10, "bold"))
+        self.style.map("TNotebook.Tab", background=[("selected", self.accent)], foreground=[("selected", "#11111b")])
 
-        results.append({
-            "store": seller_name[:25],
-            "product_name": title,
-            "price": price,
-            "link": link
-        })
+        self.style.configure("Treeview", background=self.card_bg, foreground=self.fg_text, fieldbackground=self.card_bg, rowheight=28)
+        self.style.configure("Treeview.Heading", background="#313244", foreground=self.accent, font=("Segoe UI", 10, "bold"))
+        self.style.map("Treeview", background=[("selected", "#45475a")])
 
-    if not results:
-        raise ValueError("Nenhum produto encontrado para o termo pesquisado.")
+    def create_widgets(self):
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
 
-    prices = [item["price"] for item in results]
-    avg_price = round(sum(prices) / len(prices), 2)
-    min_price = min(prices)
-    max_price = max(prices)
+        self.tab_cotacoes = ttk.Frame(self.notebook)
+        self.tab_metas = ttk.Frame(self.notebook)
+        self.tab_alertas = ttk.Frame(self.notebook)
+        self.tab_graficos = ttk.Frame(self.notebook)
+        self.tab_relatorios = ttk.Frame(self.notebook)
+        self.tab_acessibilidade = ttk.Frame(self.notebook)
 
-    save_product_search_log(query, avg_price, min_price, max_price, len(results))
+        self.notebook.add(self.tab_cotacoes, text="💱 Conversor & Moedas")
+        self.notebook.add(self.tab_metas, text="🎯 Metas & Orçamento")
+        self.notebook.add(self.tab_alertas, text="🔔 Alertas")
+        self.notebook.add(self.tab_graficos, text="📊 Gráficos")
+        self.notebook.add(self.tab_relatorios, text="📄 Relatórios")
+        self.notebook.add(self.tab_acessibilidade, text="♿ Guia & Acessibilidade")
 
-    return {
-        "items": results,
-        "stats": {
-            "average": avg_price,
-            "min": min_price,
-            "max": max_price,
-            "count": len(results)
-        }
-    }
+        self.build_tab_cotacoes()
+        self.build_tab_metas()
+        self.build_tab_alertas()
+        self.build_tab_graficos()
+        self.build_tab_relatorios()
+        self.build_tab_acessibilidade()
 
-def speak_text(text):
-    """Text-to-Speech runner using pyttsx3 in a separate background thread."""
-    if not PYTTSX3_AVAILABLE:
-        return
-    def tts_thread():
-        try:
-            engine = pyttsx3.init()
-            engine.setProperty('rate', 170)
-            engine.say(text)
-            engine.runAndWait()
-        except Exception:
-            pass
-    threading.Thread(target=tts_thread, daemon=True).start()
+        self.status_bar = tk.Label(self, text="Sistema pronto.", bg="#11111b", fg="#a6e3a1", anchor="w", padx=10, font=("Segoe UI", 9))
+        self.status_bar.pack(side="bottom", fill="x")
 
-def send_system_notification(title, message):
-    """Sends native system notifications with elegant fallbacks."""
-    if PLYER_AVAILABLE:
-        try:
-            notification.notify(
-                title=title,
-                message=message,
-                app_name="Nexus Monitor",
-                timeout=5
+    def bind_shortcuts(self):
+        self.bind("<F1>", lambda e: self.notebook.select(5))
+        self.bind("<Alt-1>", lambda e: self.notebook.select(0))
+        self.bind("<Alt-2>", lambda e: self.notebook.select(1))
+        self.bind("<Alt-3>", lambda e: self.notebook.select(2))
+        self.bind("<Alt-4>", lambda e: self.notebook.select(3))
+        self.bind("<Alt-5>", lambda e: self.notebook.select(4))
+        self.bind("<Alt-6>", lambda e: self.notebook.select(5))
+
+    # ABA 1: CONVERSOR & COTAÇÕES
+    def build_tab_cotacoes(self):
+        frame = tk.Frame(self.tab_cotacoes, bg=self.bg_dark, padx=20, pady=20)
+        frame.pack(fill="both", expand=True)
+
+        tk.Label(frame, text="Painel de Cotações em Tempo Real", font=("Segoe UI", 14, "bold"), fg=self.accent, bg=self.bg_dark).pack(anchor="w", pady=(0, 15))
+
+        self.lbl_cotacoes_cards = tk.Label(frame, text="Carregando dados...", font=("Consolas", 11), bg=self.card_bg, fg="#a6e3a1", justify="left", padx=15, pady=15, relief="solid", bd=1)
+        self.lbl_cotacoes_cards.pack(fill="x", pady=(0, 20))
+
+        btn_atualizar = tk.Button(frame, text="🔄 Atualizar Cotações Agora", command=self.atualizar_cotacoes_thread, bg=self.accent, fg="#11111b", font=("Segoe UI", 10, "bold"), relief="flat", cursor="hand2", padx=10, pady=5)
+        btn_atualizar.pack(anchor="w", pady=(0, 25))
+
+        conv_frame = tk.LabelFrame(frame, text=" Conversor Integrado ", font=("Segoe UI", 11, "bold"), bg=self.card_bg, fg=self.accent, padx=15, pady=15)
+        conv_frame.pack(fill="x")
+
+        row = tk.Frame(conv_frame, bg=self.card_bg)
+        row.pack(fill="x", pady=5)
+
+        tk.Label(row, text="Valor:", bg=self.card_bg, fg=self.fg_text).pack(side="left", padx=(0, 5))
+        self.ent_val_conv = tk.Entry(row, width=12, font=("Segoe UI", 10))
+        self.ent_val_conv.insert(0, "100.00")
+        self.ent_val_conv.pack(side="left", padx=(0, 15))
+
+        tk.Label(row, text="De:", bg=self.card_bg, fg=self.fg_text).pack(side="left", padx=(0, 5))
+        self.cb_moeda_de = ttk.Combobox(row, values=["USD", "EUR", "GBP", "JPY", "CAD", "BTC", "BRL"], width=8, state="readonly")
+        self.cb_moeda_de.set("USD")
+        self.cb_moeda_de.pack(side="left", padx=(0, 15))
+
+        tk.Label(row, text="Para:", bg=self.card_bg, fg=self.fg_text).pack(side="left", padx=(0, 5))
+        self.cb_moeda_para = ttk.Combobox(row, values=["BRL", "USD", "EUR", "GBP", "JPY", "CAD", "BTC"], width=8, state="readonly")
+        self.cb_moeda_para.set("BRL")
+        self.cb_moeda_para.pack(side="left", padx=(0, 15))
+
+        btn_calcular = tk.Button(row, text="Converter", command=self.executar_conversao, bg="#a6e3a1", fg="#11111b", font=("Segoe UI", 10, "bold"), relief="flat", cursor="hand2", padx=10)
+        btn_calcular.pack(side="left")
+
+        self.lbl_resultado_conv = tk.Label(conv_frame, text="Resultado: -", font=("Segoe UI", 12, "bold"), bg=self.card_bg, fg="#f9e2af")
+        self.lbl_resultado_conv.pack(anchor="w", pady=(15, 0))
+
+    def atualizar_cotacoes_thread(self):
+        self.status_bar.config(text="Atualizando cotações...")
+        threading.Thread(target=self._worker_cotacoes, daemon=True).start()
+
+    def _worker_cotacoes(self):
+        dados = obter_cotacoes()
+        if dados:
+            texto = (
+                f"💵 Dólar (USD): R$ {float(dados['USDBRL']['bid']):.2f}   |   "
+                f"💶 Euro (EUR): R$ {float(dados['EURBRL']['bid']):.2f}\n"
+                f"💷 Libra (GBP): R$ {float(dados['GBPBRL']['bid']):.2f}   |   "
+                f"💴 Iene (JPY): R$ {float(dados['JPYBRL']['bid']):.4f}\n"
+                f"🇨🇦 CAD: R$ {float(dados['CADBRL']['bid']):.2f}         |   "
+                f"₿ Bitcoin (BTC): R$ {float(dados['BTCBRL']['bid']):,.2f}"
             )
-            return
-        except Exception:
-            pass
-    messagebox.showinfo(title, message)
+            self.dados_cotacoes_atuais = dados
+        else:
+            texto = "Não foi possível conectar com o servidor de cotações."
+            self.dados_cotacoes_atuais = None
 
+        self.after(0, lambda: self._update_cotacoes_ui(texto))
 
-def run_gui():
-    init_db()
-    rates = fetch_currency_rates()
+    def _update_cotacoes_ui(self, texto):
+        self.lbl_cotacoes_cards.config(text=texto)
+        self.status_bar.config(text="Cotações atualizadas.")
 
-    root = tk.Tk()
-    root.title("Nexus Financial & Market Analyzer")
-    root.geometry("1000x780")
-    root.minsize(900, 700)
-
-    # Catppuccin Dark Theme Palette Colors
-    DARK_BG = "#181825"
-    CARD_BG = "#1e1e2e"
-    BORDER_BG = "#313244"
-    TEXT_MAIN = "#cdd6f4"
-    TEXT_MUTED = "#a6adc8"
-    ACCENT_BLUE = "#89b4fa"
-    ACCENT_GREEN = "#a6e3a1"
-    ACCENT_YELLOW = "#f9e2af"
-    ACCENT_WARN = "#f38ba8"
-
-    style = ttk.Style()
-    style.theme_use("clam")
-
-    # Apply modern styles to TTK components
-    root.configure(bg=DARK_BG)
-    style.configure(".", background=DARK_BG, foreground=TEXT_MAIN, font=("Segoe UI", 10))
-    style.configure("TNotebook", background=DARK_BG, borderwidth=0)
-    style.configure("TNotebook.Tab", background=CARD_BG, foreground=TEXT_MAIN, padding=[14, 8], font=("Segoe UI", 10, "bold"))
-    style.map("TNotebook.Tab", background=[("selected", ACCENT_BLUE)], foreground=[("selected", "#11111b")])
-    
-    style.configure("Card.TFrame", background=CARD_BG, relief="flat", borderwidth=1)
-    style.configure("Header.TLabel", font=("Segoe UI", 16, "bold"), foreground=ACCENT_BLUE, background=DARK_BG)
-    style.configure("SubHeader.TLabel", font=("Segoe UI", 11, "bold"), foreground=TEXT_MAIN, background=CARD_BG)
-    style.configure("StatValue.TLabel", font=("Segoe UI", 14, "bold"), foreground=ACCENT_GREEN, background=CARD_BG)
-    style.configure("MinMax.TLabel", font=("Segoe UI", 10, "bold"), foreground=ACCENT_YELLOW, background=CARD_BG)
-
-    style.configure("Treeview", background=CARD_BG, foreground=TEXT_MAIN, fieldbackground=CARD_BG, rowheight=28)
-    style.configure("Treeview.Heading", background=BORDER_BG, foreground=TEXT_MAIN, font=("Segoe UI", 10, "bold"))
-    style.map("Treeview", background=[("selected", ACCENT_BLUE)], foreground=[("selected", "#11111b")])
-
-    # Header Bar
-    header_frame = ttk.Frame(root)
-    header_frame.pack(fill="x", padx=20, pady=12)
-    
-    lbl_title = ttk.Label(header_frame, text="⚡ Nexus Market & Currency Monitor", style="Header.TLabel")
-    lbl_title.pack(side="left")
-
-    btn_tts_help = tk.Button(
-        header_frame,
-        text="🔊 Voz",
-        command=lambda: speak_text("Nexus Monitor ativado. Use os atalhos de Alt 1 a 6 para navegar pelas abas."),
-        bg=BORDER_BG, fg=TEXT_MAIN, relief="flat", font=("Segoe UI", 9, "bold"), cursor="hand2", padx=10
-    )
-    btn_tts_help.pack(side="right")
-
-    # Tabs Notebook
-    notebook = ttk.Notebook(root)
-    notebook.pack(fill="both", expand=True, padx=20, pady=(0, 5))
-
-    # --- TAB 1: CONVERTER ---
-    tab_curr = ttk.Frame(notebook)
-    notebook.add(tab_curr, text=" 💱 Conversor ")
-
-    card_curr = ttk.Frame(tab_curr, style="Card.TFrame")
-    card_curr.pack(fill="both", expand=True, padx=15, pady=15)
-
-    ttk.Label(card_curr, text="Conversão de Moedas em Tempo Real", style="SubHeader.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", padx=20, pady=15)
-
-    ttk.Label(card_curr, text="Valor:").grid(row=1, column=0, padx=20, pady=10, sticky="w")
-    ent_amount = ttk.Entry(card_curr, font=("Segoe UI", 11))
-    ent_amount.insert(0, "100.00")
-    ent_amount.grid(row=1, column=1, padx=10, pady=10, sticky="ew")
-
-    ttk.Label(card_curr, text="De:").grid(row=2, column=0, padx=20, pady=10, sticky="w")
-    cb_from = ttk.Combobox(card_curr, values=list(rates.keys()), state="readonly", font=("Segoe UI", 10))
-    cb_from.set("USD")
-    cb_from.grid(row=2, column=1, padx=10, pady=10, sticky="ew")
-
-    ttk.Label(card_curr, text="Para:").grid(row=2, column=2, padx=10, pady=10, sticky="w")
-    cb_to = ttk.Combobox(card_curr, values=list(rates.keys()), state="readonly", font=("Segoe UI", 10))
-    cb_to.set("BRL")
-    cb_to.grid(row=2, column=3, padx=20, pady=10, sticky="ew")
-
-    lbl_curr_result = ttk.Label(card_curr, text="Resultado: ---", style="StatValue.TLabel", anchor="center")
-    lbl_curr_result.grid(row=4, column=0, columnspan=4, padx=20, pady=20, sticky="ew")
-
-    def do_currency_convert():
+    def executar_conversao(self):
         try:
-            val = float(ent_amount.get().replace(",", "."))
-            f_curr = cb_from.get()
-            t_curr = cb_to.get()
-            
-            res, rate = convert_currency(val, f_curr, t_curr, rates)
-            res_str = f"{val:,.2f} {f_curr} = {res:,.2f} {t_curr}"
-            lbl_curr_result.config(text=f"{res_str}\n\n(Taxa Aplicada: 1 {f_curr} = {rate:.4f} {t_curr})")
-            speak_text(f"O resultado da conversão é {res:,.2f} {t_curr}")
-            lbl_status.config(text=f"Conversão concluída: {f_curr} para {t_curr}")
-        except ValueError:
-            messagebox.showerror("Erro de Entrada", "Por favor, insira um valor numérico válido.")
-        except Exception as ex:
-            messagebox.showerror("Erro", str(ex))
+            val = float(self.ent_val_conv.get().replace(",", "."))
+            de = self.cb_moeda_de.get()
+            para = self.cb_moeda_para.get()
 
-    btn_convert = tk.Button(
-        card_curr, text="Calcular Conversão", command=do_currency_convert,
-        bg=ACCENT_BLUE, fg="#11111b", font=("Segoe UI", 11, "bold"), relief="flat", pady=8, cursor="hand2"
-    )
-    btn_convert.grid(row=3, column=0, columnspan=4, padx=20, pady=10, sticky="ew")
+            if de == para:
+                res = val
+                taxa = 1.0
+            else:
+                def get_rate(m):
+                    if m == "BRL": return 1.0
+                    key = f"{m}BRL"
+                    if hasattr(self, 'dados_cotacoes_atuais') and self.dados_cotacoes_atuais and key in self.dados_cotacoes_atuais:
+                        return float(self.dados_cotacoes_atuais[key]['bid'])
+                    return None
 
-    # --- TAB 2: PRODUCTS ---
-    tab_prod = ttk.Frame(notebook)
-    notebook.add(tab_prod, text=" 🛒 Produtos ")
+                taxa_de = get_rate(de)
+                taxa_para = get_rate(para)
 
-    card_prod = ttk.Frame(tab_prod, style="Card.TFrame")
-    card_prod.pack(fill="both", expand=True, padx=15, pady=15)
+                if taxa_de is None or taxa_para is None:
+                    messagebox.showwarning("Aviso", "Por favor, atualize as cotações primeiro.")
+                    return
 
-    ttk.Label(card_prod, text="Análise de Preços Reais (Mercado Livre)", style="SubHeader.TLabel").pack(anchor="w", padx=20, pady=10)
+                valor_brl = val * taxa_de
+                res = valor_brl / taxa_para
+                taxa = taxa_de / taxa_para
 
-    search_bar_frame = ttk.Frame(card_prod)
-    search_bar_frame.pack(fill="x", padx=20, pady=5)
+            self.lbl_resultado_conv.config(text=f"Resultado: {val:.2f} {de} = {res:.2f} {para} (Taxa: {taxa:.4f})")
 
-    ttk.Label(search_bar_frame, text="Produto:").pack(side="left", padx=(0, 10))
-    ent_product = ttk.Entry(search_bar_frame, font=("Segoe UI", 11))
-    ent_product.pack(side="left", fill="x", expand=True, padx=(0, 10))
-    ent_product.insert(0, "Playstation 5")
-
-    stats_frame = ttk.Frame(card_prod)
-    stats_frame.pack(fill="x", padx=20, pady=10)
-
-    lbl_avg = ttk.Label(stats_frame, text="Média: R$ 0,00", style="StatValue.TLabel")
-    lbl_avg.pack(side="left", expand=True)
-
-    lbl_min = ttk.Label(stats_frame, text="Mín: R$ 0,00", style="MinMax.TLabel")
-    lbl_min.pack(side="left", expand=True)
-
-    lbl_max = ttk.Label(stats_frame, text="Máx: R$ 0,00", style="MinMax.TLabel")
-    lbl_max.pack(side="left", expand=True)
-
-    cols = ("store", "product", "price")
-    tree = ttk.Treeview(card_prod, columns=cols, show="headings", height=8)
-    tree.heading("store", text="Vendedor / Loja")
-    tree.heading("product", text="Título do Anúncio")
-    tree.heading("price", text="Preço (R$)")
-
-    tree.column("store", width=180)
-    tree.column("product", width=420)
-    tree.column("price", width=120, anchor="e")
-    tree.pack(fill="both", expand=True, padx=20, pady=10)
-
-    item_links = {}
-
-    def do_product_search():
-        query = ent_product.get().strip()
-        if not query:
-            messagebox.showwarning("Aviso", "Digite o nome de um produto para pesquisar.")
-            return
-        
-        btn_search_prod.config(state="disabled", text="Buscando...")
-        lbl_status.config(text=f"Buscando ofertas no Mercado Livre para '{query}'...")
-        root.update()
-
-        try:
-            for item in tree.get_children():
-                tree.delete(item)
-            item_links.clear()
-
-            results = scrape_mercado_livre(query, max_items=15)
-            stats = results["stats"]
-
-            lbl_avg.config(text=f"Média: R$ {stats['average']:,.2f}")
-            lbl_min.config(text=f"Mínimo: R$ {stats['min']:,.2f}")
-            lbl_max.config(text=f"Máximo: R$ {stats['max']:,.2f}")
-
-            for p in results["items"]:
-                item_id = tree.insert("", "end", values=(
-                    p["store"],
-                    p["product_name"],
-                    f"R$ {p['price']:,.2f}"
-                ))
-                item_links[item_id] = p["link"]
-
-            speak_text(f"Busca concluída. Foram encontrados {stats['count']} produtos com preço médio de {stats['average']} reais.")
-            lbl_status.config(text=f"Busca por '{query}' finalizada ({stats['count']} itens).")
-
-        except Exception as err:
-            messagebox.showerror("Erro na Pesquisa", str(err))
-            lbl_status.config(text="Erro ao realizar pesquisa de produtos.")
-        finally:
-            btn_search_prod.config(state="normal", text="Pesquisar no ML")
-
-    def open_link(event):
-        selected = tree.selection()
-        if selected:
-            link = item_links.get(selected[0])
-            if link and link != "#":
-                webbrowser.open(link)
-
-    tree.bind("<Double-1>", open_link)
-
-    btn_search_prod = tk.Button(
-        search_bar_frame, text="Pesquisar no ML", command=do_product_search,
-        bg=ACCENT_GREEN, fg="#11111b", font=("Segoe UI", 10, "bold"), relief="flat", padx=15, cursor="hand2"
-    )
-    btn_search_prod.pack(side="right")
-
-    # --- TAB 3: ALERTS ---
-    tab_alert = ttk.Frame(notebook)
-    notebook.add(tab_alert, text=" 🔔 Alertas ")
-
-    card_alert = ttk.Frame(tab_alert, style="Card.TFrame")
-    card_alert.pack(fill="both", expand=True, padx=15, pady=15)
-
-    ttk.Label(card_alert, text="Gerenciador de Alertas de Preço Target", style="SubHeader.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", padx=20, pady=15)
-
-    ttk.Label(card_alert, text="Item / Moeda:").grid(row=1, column=0, padx=20, pady=10, sticky="w")
-    ent_alert_item = ttk.Entry(card_alert, font=("Segoe UI", 10))
-    ent_alert_item.insert(0, "USD")
-    ent_alert_item.grid(row=1, column=1, padx=10, pady=10, sticky="ew")
-
-    ttk.Label(card_alert, text="Preço Alvo:").grid(row=1, column=2, padx=10, pady=10, sticky="w")
-    ent_alert_target = ttk.Entry(card_alert, font=("Segoe UI", 10))
-    ent_alert_target.insert(0, "5.10")
-    ent_alert_target.grid(row=1, column=3, padx=20, pady=10, sticky="ew")
-
-    ttk.Label(card_alert, text="Condição:").grid(row=2, column=0, padx=20, pady=10, sticky="w")
-    cb_condition = ttk.Combobox(card_alert, values=["Menor que (<)", "Maior que (>)"], state="readonly", font=("Segoe UI", 10))
-    cb_condition.set("Menor que (<)")
-    cb_condition.grid(row=2, column=1, padx=10, pady=10, sticky="ew")
-
-    alert_tree = ttk.Treeview(card_alert, columns=("id", "item", "target", "condition"), show="headings", height=6)
-    alert_tree.heading("id", text="ID")
-    alert_tree.heading("item", text="Item/Moeda")
-    alert_tree.heading("target", text="Valor Alvo")
-    alert_tree.heading("condition", text="Condição")
-    alert_tree.column("id", width=50)
-    alert_tree.column("item", width=180)
-    alert_tree.column("target", width=120)
-    alert_tree.column("condition", width=150)
-    alert_tree.grid(row=4, column=0, columnspan=4, padx=20, pady=15, sticky="nsew")
-
-    def refresh_alerts_list():
-        for row in alert_tree.get_children():
-            alert_tree.delete(row)
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, item_name, target_price, condition FROM price_alerts WHERE is_active = 1")
-        for row in cursor.fetchall():
-            alert_tree.insert("", "end", values=row)
-        conn.close()
-
-    def add_alert():
-        item = ent_alert_item.get().strip()
-        cond = cb_condition.get()
-        try:
-            target = float(ent_alert_target.get().replace(",", "."))
-            conn = sqlite3.connect(DB_NAME)
-            cursor = conn.cursor()
-            cursor.execute("INSERT INTO price_alerts (target_type, item_name, target_price, condition) VALUES ('custom', ?, ?, ?)",
-                           (item, target, cond))
+            conn = sqlite3.connect(DB_FILE)
+            c = conn.cursor()
+            c.execute("INSERT INTO conversoes (moeda_origem, moeda_destino, valor_origem, valor_convertido, taxa, data_conversao) VALUES (?, ?, ?, ?, ?, ?)",
+                      (de, para, val, res, taxa, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
             conn.commit()
             conn.close()
-            refresh_alerts_list()
-            send_system_notification("Alerta Criado", f"Monitorando {item} para a condição {cond} {target}")
-            lbl_status.config(text=f"Alerta adicionado para {item}")
+            log_event_json("CONVERSAO", {"de": de, "para": para, "valor": val, "resultado": res})
         except ValueError:
-            messagebox.showerror("Erro", "Valor alvo inválido.")
+            messagebox.showerror("Erro", "Insira um valor numérico válido.")
 
-    btn_add_alert = tk.Button(
-        card_alert, text="Cadastrar Alerta", command=add_alert,
-        bg=ACCENT_YELLOW, fg="#11111b", font=("Segoe UI", 10, "bold"), relief="flat", pady=6, cursor="hand2"
-    )
-    btn_add_alert.grid(row=3, column=0, columnspan=4, padx=20, pady=10, sticky="ew")
-    refresh_alerts_list()
+    # ABA 2: METAS & ORÇAMENTO PESSOAL
+    def build_tab_metas(self):
+        frame = tk.Frame(self.tab_metas, bg=self.bg_dark, padx=20, pady=20)
+        frame.pack(fill="both", expand=True)
 
-    # --- TAB 4: CHARTS ---
-    tab_chart = ttk.Frame(notebook)
-    notebook.add(tab_chart, text=" 📊 Gráficos ")
+        tk.Label(frame, text="Gestão de Metas Financeiras e Orçamento", font=("Segoe UI", 14, "bold"), fg=self.accent, bg=self.bg_dark).pack(anchor="w", pady=(0, 10))
 
-    card_chart = ttk.Frame(tab_chart, style="Card.TFrame")
-    card_chart.pack(fill="both", expand=True, padx=15, pady=15)
+        form_frame = tk.LabelFrame(frame, text=" Nova Meta / Orçamento ", font=("Segoe UI", 10, "bold"), bg=self.card_bg, fg=self.accent, padx=15, pady=10)
+        form_frame.pack(fill="x", pady=(0, 15))
 
-    ttk.Label(card_chart, text="Histórico de Preços e Cotações", style="SubHeader.TLabel").pack(anchor="w", padx=20, pady=10)
+        f_row1 = tk.Frame(form_frame, bg=self.card_bg)
+        f_row1.pack(fill="x", pady=4)
 
-    chart_container = ttk.Frame(card_chart)
-    chart_container.pack(fill="both", expand=True, padx=20, pady=10)
+        tk.Label(f_row1, text="Nome da Meta:", bg=self.card_bg, fg=self.fg_text).pack(side="left", padx=(0, 5))
+        self.ent_meta_nome = tk.Entry(f_row1, width=20)
+        self.ent_meta_nome.pack(side="left", padx=(0, 15))
 
-    def draw_chart():
-        for widget in chart_container.winfo_children():
-            widget.destroy()
+        tk.Label(f_row1, text="Categoria:", bg=self.card_bg, fg=self.fg_text).pack(side="left", padx=(0, 5))
+        self.cb_meta_cat = ttk.Combobox(f_row1, values=["Reserva de Emergência", "Investimentos", "Viagem", "Tecnologia", "Educação", "Outros"], width=18, state="readonly")
+        self.cb_meta_cat.set("Reserva de Emergência")
+        self.cb_meta_cat.pack(side="left", padx=(0, 15))
+
+        f_row2 = tk.Frame(form_frame, bg=self.card_bg)
+        f_row2.pack(fill="x", pady=4)
+
+        tk.Label(f_row2, text="Valor Alvo (R$):", bg=self.card_bg, fg=self.fg_text).pack(side="left", padx=(0, 5))
+        self.ent_meta_alvo = tk.Entry(f_row2, width=12)
+        self.ent_meta_alvo.pack(side="left", padx=(0, 15))
+
+        tk.Label(f_row2, text="Valor Atual (R$):", bg=self.card_bg, fg=self.fg_text).pack(side="left", padx=(0, 5))
+        self.ent_meta_atual = tk.Entry(f_row2, width=12)
+        self.ent_meta_atual.insert(0, "0.00")
+        self.ent_meta_atual.pack(side="left", padx=(0, 15))
+
+        tk.Label(f_row2, text="Data Limite:", bg=self.card_bg, fg=self.fg_text).pack(side="left", padx=(0, 5))
+        self.ent_meta_data = tk.Entry(f_row2, width=12)
+        self.ent_meta_data.insert(0, datetime.datetime.now().strftime("%Y-12-31"))
+        self.ent_meta_data.pack(side="left", padx=(0, 15))
+
+        btn_salvar_meta = tk.Button(f_row2, text="➕ Adicionar Meta", command=self.salvar_meta, bg=self.accent, fg="#11111b", font=("Segoe UI", 9, "bold"), relief="flat", cursor="hand2", padx=10)
+        btn_salvar_meta.pack(side="left")
+
+        # Tabela de Metas
+        columns = ("id", "nome", "categoria", "alvo", "atual", "progresso", "limite")
+        self.tree_metas = ttk.Treeview(frame, columns=columns, show="headings")
+        self.tree_metas.heading("id", text="ID")
+        self.tree_metas.heading("nome", text="Meta / Objetivo")
+        self.tree_metas.heading("categoria", text="Categoria")
+        self.tree_metas.heading("alvo", text="Alvo (R$)")
+        self.tree_metas.heading("atual", text="Atual (R$)")
+        self.tree_metas.heading("progresso", text="% Concluído")
+        self.tree_metas.heading("limite", text="Data Limite")
+
+        self.tree_metas.column("id", width=40, anchor="center")
+        self.tree_metas.column("nome", width=200)
+        self.tree_metas.column("categoria", width=140)
+        self.tree_metas.column("alvo", width=110, anchor="e")
+        self.tree_metas.column("atual", width=110, anchor="e")
+        self.tree_metas.column("progresso", width=100, anchor="center")
+        self.tree_metas.column("limite", width=100, anchor="center")
+
+        self.tree_metas.pack(fill="both", expand=True, pady=(0, 10))
+
+        action_bar = tk.Frame(frame, bg=self.bg_dark)
+        action_bar.pack(fill="x")
+
+        tk.Button(action_bar, text="💵 Aportar / Atualizar Saldo Selecionado", command=self.atualizar_saldo_meta, bg="#a6e3a1", fg="#11111b", font=("Segoe UI", 9, "bold"), relief="flat", cursor="hand2", padx=10).pack(side="left", padx=(0, 10))
+        tk.Button(action_bar, text="❌ Excluir Meta", command=self.excluir_meta, bg="#f38ba8", fg="#11111b", font=("Segoe UI", 9, "bold"), relief="flat", cursor="hand2", padx=10).pack(side="left")
+
+        self.carregar_metas_db()
+
+    def salvar_meta(self):
+        nome = self.ent_meta_nome.get().strip()
+        cat = self.cb_meta_cat.get()
+        data_lim = self.ent_meta_data.get().strip()
+        try:
+            val_alvo = float(self.ent_meta_alvo.get().replace(",", "."))
+            val_atual = float(self.ent_meta_atual.get().replace(",", "."))
+            if not nome or val_alvo <= 0:
+                raise ValueError()
+
+            conn = sqlite3.connect(DB_FILE)
+            c = conn.cursor()
+            c.execute("INSERT INTO metas_financeiras (nome, categoria, valor_alvo, valor_atual, data_limite) VALUES (?, ?, ?, ?, ?)",
+                      (nome, cat, val_alvo, val_atual, data_lim))
+            conn.commit()
+            conn.close()
+
+            log_event_json("NOVA_META", {"nome": nome, "alvo": val_alvo, "atual": val_atual})
+            messagebox.showinfo("Sucesso", "Meta cadastrada com sucesso!")
+            
+            self.ent_meta_nome.delete(0, tk.END)
+            self.ent_meta_alvo.delete(0, tk.END)
+            self.ent_meta_atual.delete(0, tk.END)
+            self.ent_meta_atual.insert(0, "0.00")
+
+            self.carregar_metas_db()
+            self.atualizar_graficos()
+        except ValueError:
+            messagebox.showerror("Erro", "Preencha o nome e valores numéricos válidos.")
+
+    def carregar_metas_db(self):
+        for item in self.tree_metas.get_children():
+            self.tree_metas.delete(item)
+
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("SELECT id, nome, categoria, valor_alvo, valor_atual, data_limite FROM metas_financeiras")
+        rows = c.fetchall()
+        conn.close()
+
+        for r in rows:
+            m_id, nome, cat, alvo, atual, limite = r
+            pct = (atual / alvo * 100) if alvo > 0 else 0
+            self.tree_metas.insert("", "end", values=(m_id, nome, cat, f"R$ {alvo:,.2f}", f"R$ {atual:,.2f}", f"{pct:.1f}%", limite))
+
+    def atualizar_saldo_meta(self):
+        selected = self.tree_metas.selection()
+        if not selected:
+            messagebox.showwarning("Aviso", "Selecione uma meta na tabela para atualizar o saldo.")
+            return
+
+        item = self.tree_metas.item(selected[0])
+        meta_id = item["values"][0]
+        nome_meta = item["values"][1]
+
+        def popup_salvar():
+            try:
+                novo_val = float(ent_novo.get().replace(",", "."))
+                conn = sqlite3.connect(DB_FILE)
+                c = conn.cursor()
+                c.execute("UPDATE metas_financeiras SET valor_atual = ? WHERE id = ?", (novo_val, meta_id))
+                conn.commit()
+                conn.close()
+                log_event_json("ATUALIZACAO_META", {"id": meta_id, "novo_saldo": novo_val})
+                top.destroy()
+                self.carregar_metas_db()
+                self.atualizar_graficos()
+            except ValueError:
+                messagebox.showerror("Erro", "Insira um valor válido.")
+
+        top = tk.Toplevel(self)
+        top.title("Atualizar Saldo")
+        top.geometry("300x150")
+        top.configure(bg=self.card_bg)
+
+        tk.Label(top, text=f"Novo saldo para '{nome_meta}':", bg=self.card_bg, fg=self.fg_text).pack(pady=10)
+        ent_novo = tk.Entry(top, font=("Segoe UI", 10))
+        ent_novo.pack(pady=5)
+        tk.Button(top, text="Salvar", command=popup_salvar, bg=self.accent, fg="#11111b", font=("Segoe UI", 9, "bold")).pack(pady=10)
+
+    def excluir_meta(self):
+        selected = self.tree_metas.selection()
+        if not selected:
+            messagebox.showwarning("Aviso", "Selecione uma meta para excluir.")
+            return
+
+        meta_id = self.tree_metas.item(selected[0])["values"][0]
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("DELETE FROM metas_financeiras WHERE id = ?", (meta_id,))
+        conn.commit()
+        conn.close()
+
+        self.carregar_metas_db()
+        self.atualizar_graficos()
+
+    # ABA 3: ALERTAS DE PREÇO / COTAÇÃO
+    def build_tab_alertas(self):
+        frame = tk.Frame(self.tab_alertas, bg=self.bg_dark, padx=20, pady=20)
+        frame.pack(fill="both", expand=True)
+
+        tk.Label(frame, text="Gerenciador de Alertas de Preços / Cotações", font=("Segoe UI", 14, "bold"), fg=self.accent, bg=self.bg_dark).pack(anchor="w", pady=(0, 15))
+
+        form = tk.Frame(frame, bg=self.card_bg, padx=15, pady=15)
+        form.pack(fill="x", pady=(0, 15))
+
+        tk.Label(form, text="Tipo:", bg=self.card_bg, fg=self.fg_text).pack(side="left", padx=(0, 5))
+        self.cb_alerta_tipo = ttk.Combobox(form, values=["Moeda", "Meta Progresso"], width=15, state="readonly")
+        self.cb_alerta_tipo.set("Moeda")
+        self.cb_alerta_tipo.pack(side="left", padx=(0, 15))
+
+        tk.Label(form, text="Alvo (ex: USD):", bg=self.card_bg, fg=self.fg_text).pack(side="left", padx=(0, 5))
+        self.ent_alerta_alvo = tk.Entry(form, width=15)
+        self.ent_alerta_alvo.pack(side="left", padx=(0, 15))
+
+        tk.Label(form, text="Preço Máximo Teto (R$):", bg=self.card_bg, fg=self.fg_text).pack(side="left", padx=(0, 5))
+        self.ent_alerta_preco = tk.Entry(form, width=12)
+        self.ent_alerta_preco.pack(side="left", padx=(0, 15))
+
+        btn_add = tk.Button(form, text="➕ Salvar Alerta", command=self.adicionar_alerta, bg=self.accent, fg="#11111b", font=("Segoe UI", 9, "bold"), relief="flat", cursor="hand2")
+        btn_add.pack(side="left")
+
+        self.tree_alertas = ttk.Treeview(frame, columns=("id", "tipo", "alvo", "preco"), show="headings")
+        self.tree_alertas.heading("id", text="ID")
+        self.tree_alertas.heading("tipo", text="Tipo")
+        self.tree_alertas.heading("alvo", text="Alvo")
+        self.tree_alertas.heading("preco", text="Preço Alvo Teto")
+        self.tree_alertas.column("id", width=50)
+        self.tree_alertas.pack(fill="both", expand=True)
+
+        self.carregar_alertas_db()
+
+    def adicionar_alerta(self):
+        tipo = self.cb_alerta_tipo.get()
+        alvo = self.ent_alerta_alvo.get().strip()
+        try:
+            preco = float(self.ent_alerta_preco.get().replace(",", "."))
+            if not alvo: raise ValueError()
+            
+            conn = sqlite3.connect(DB_FILE)
+            c = conn.cursor()
+            c.execute("INSERT INTO alertas (tipo, alvo, preco_alvo) VALUES (?, ?, ?)", (tipo, alvo, preco))
+            conn.commit()
+            conn.close()
+
+            messagebox.showinfo("Sucesso", "Alerta cadastrado com sucesso!")
+            self.carregar_alertas_db()
+        except ValueError:
+            messagebox.showerror("Erro", "Preencha o alvo e o preço limite corretamente.")
+
+    def carregar_alertas_db(self):
+        for item in self.tree_alertas.get_children():
+            self.tree_alertas.delete(item)
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("SELECT id, tipo, alvo, preco_alvo FROM alertas WHERE ativo = 1")
+        for row in c.fetchall():
+            self.tree_alertas.insert("", "end", values=(row[0], row[1], row[2], f"R$ {row[3]:,.2f}"))
+        conn.close()
+
+    # ABA 4: GRÁFICOS (MATPLOTLIB)
+    def build_tab_graficos(self):
+        frame = tk.Frame(self.tab_graficos, bg=self.bg_dark, padx=20, pady=20)
+        frame.pack(fill="both", expand=True)
+
+        tk.Label(frame, text="Progresso das Metas Financeiras", font=("Segoe UI", 14, "bold"), fg=self.accent, bg=self.bg_dark).pack(anchor="w", pady=(0, 10))
 
         if not MATPLOTLIB_AVAILABLE:
-            ttk.Label(chart_container, text="A biblioteca Matplotlib não está instalada no ambiente.\nInstale com: pip install matplotlib", foreground=ACCENT_WARN, font=("Segoe UI", 11)).pack(expand=True)
+            tk.Label(frame, text="Biblioteca Matplotlib não instalada.\nInstale com: pip install matplotlib", fg="#f38ba8", bg=self.bg_dark).pack(expand=True)
             return
 
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        cursor.execute("SELECT query, avg_price, timestamp FROM product_searches ORDER BY id DESC LIMIT 10")
-        rows = cursor.fetchall()
+        self.fig = Figure(figsize=(8, 4), dpi=100, facecolor="#181825")
+        self.ax = self.fig.add_subplot(111)
+        self.ax.set_facecolor("#1e1e2e")
+        self.ax.tick_params(colors="#cdd6f4")
+        
+        self.canvas = FigureCanvasTkAgg(self.fig, master=frame)
+        self.canvas.get_tk_widget().pack(fill="both", expand=True)
+
+        self.atualizar_graficos()
+
+    def atualizar_graficos(self):
+        if not MATPLOTLIB_AVAILABLE or not hasattr(self, 'ax'):
+            return
+        
+        self.ax.clear()
+        self.ax.set_facecolor("#1e1e2e")
+        self.ax.tick_params(colors="#cdd6f4")
+
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("SELECT nome, valor_alvo, valor_atual FROM metas_financeiras LIMIT 6")
+        rows = c.fetchall()
         conn.close()
 
-        if not rows:
-            ttk.Label(chart_container, text="Nenhum dado histórico encontrado para gerar gráficos ainda.", font=("Segoe UI", 11)).pack(expand=True)
-            return
+        if rows:
+            nomes = [r[0][:12] for r in rows]
+            alvos = [r[1] for r in rows]
+            atuais = [r[2] for r in rows]
 
-        queries = [r[0][:10] for r in reversed(rows)]
-        prices = [r[1] for r in reversed(rows)]
+            x = range(len(nomes))
+            width = 0.35
 
-        fig = Figure(figsize=(6, 3.5), dpi=100)
-        fig.patch.set_facecolor(CARD_BG)
-        ax = fig.add_subplot(111)
-        ax.set_facecolor(CARD_BG)
-        ax.plot(queries, prices, marker='o', color=ACCENT_BLUE, linewidth=2)
-        ax.set_title("Média de Preços de Buscas Recentes (R$)", color=TEXT_MAIN, fontsize=12)
-        ax.tick_params(colors=TEXT_MAIN, labelsize=9)
-        ax.spines['bottom'].set_color(BORDER_BG)
-        ax.spines['top'].set_color(BORDER_BG)
-        ax.spines['left'].set_color(BORDER_BG)
-        ax.spines['right'].set_color(BORDER_BG)
-        fig.tight_layout()
+            self.ax.bar([i - width/2 for i in x], alvos, width, label="Alvo (R$)", color="#45475a")
+            self.ax.bar([i + width/2 for i in x], atuais, width, label="Atual (R$)", color="#89b4fa")
 
-        canvas_fig = FigureCanvasTkAgg(fig, master=chart_container)
-        canvas_fig.draw()
-        canvas_fig.get_tk_widget().pack(fill="both", expand=True)
-        lbl_status.config(text="Gráfico atualizado com dados recentes.")
+            self.ax.set_xticks(list(x))
+            self.ax.set_xticklabels(nomes)
+            self.ax.legend(facecolor="#1e1e2e", labelcolor="#cdd6f4")
+            self.ax.set_ylabel("Valor (R$)", color="#cdd6f4")
+            self.ax.set_title("Comparativo: Valor Alvo vs Saldo Atual", color="#cdd6f4")
+        else:
+            self.ax.text(0.5, 0.5, "Cadastre metas para visualizar o gráfico comparativo.", color="#cdd6f4", ha="center")
 
-    btn_refresh_chart = tk.Button(card_chart, text="Atualizar Gráfico", command=draw_chart, bg=BORDER_BG, fg=TEXT_MAIN, relief="flat", font=("Segoe UI", 9, "bold"))
-    btn_refresh_chart.pack(anchor="e", padx=20, pady=(0, 10))
-    draw_chart()
+        self.canvas.draw()
 
-    # --- TAB 5: REPORTS ---
-    tab_export = ttk.Frame(notebook)
-    notebook.add(tab_export, text=" 📄 Relatórios ")
+    # ABA 5: RELATÓRIOS (CSV & PDF)
+    def build_tab_relatorios(self):
+        frame = tk.Frame(self.tab_relatorios, bg=self.bg_dark, padx=20, pady=20)
+        frame.pack(fill="both", expand=True)
 
-    card_export = ttk.Frame(tab_export, style="Card.TFrame")
-    card_export.pack(fill="both", expand=True, padx=15, pady=15)
+        tk.Label(frame, text="Central de Exportação de Relatórios", font=("Segoe UI", 14, "bold"), fg=self.accent, bg=self.bg_dark).pack(anchor="w", pady=(0, 15))
 
-    ttk.Label(card_export, text="Exportação de Relatórios de Auditoria", style="SubHeader.TLabel").pack(anchor="w", padx=20, pady=15)
+        box = tk.Frame(frame, bg=self.card_bg, padx=20, pady=20)
+        box.pack(fill="x")
 
-    def export_csv():
-        file_path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV Files", "*.csv")])
-        if not file_path:
-            return
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM currency_history")
-        rows = cursor.fetchall()
+        tk.Button(box, text="📥 Exportar Metas Financeiras (CSV)", command=self.exportar_csv, bg=self.accent, fg="#11111b", font=("Segoe UI", 10, "bold"), relief="flat", cursor="hand2", padx=10, pady=8).pack(anchor="w", pady=5)
+        tk.Button(box, text="📄 Gerar Relatório Executivo de Metas (PDF)", command=self.exportar_pdf, bg="#a6e3a1", fg="#11111b", font=("Segoe UI", 10, "bold"), relief="flat", cursor="hand2", padx=10, pady=8).pack(anchor="w", pady=5)
+
+    def exportar_csv(self):
+        filepath = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV Files", "*.csv")])
+        if not filepath: return
+
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("SELECT * FROM metas_financeiras")
+        rows = c.fetchall()
         conn.close()
 
-        with open(file_path, "w", newline="", encoding="utf-8") as f:
+        import csv
+        with open(filepath, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(["ID", "Base", "Target", "Rate", "Amount", "Converted", "Timestamp"])
+            writer.writerow(["ID", "Nome Meta", "Categoria", "Valor Alvo", "Valor Atual", "Data Limite"])
             writer.writerows(rows)
-        messagebox.showinfo("Sucesso", "Relatório CSV exportado com sucesso!")
-        lbl_status.config(text=f"CSV Exportado: {file_path}")
 
-    def export_pdf():
-        file_path = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF Files", "*.pdf")])
-        if not file_path:
-            return
+        messagebox.showinfo("Sucesso", f"Relatório CSV salvo em:\n{filepath}")
 
+    def exportar_pdf(self):
         if not REPORTLAB_AVAILABLE:
-            messagebox.showwarning("Biblioteca Indisponível", "A biblioteca ReportLab não está disponível. Gerando relatório em texto simples.")
-            with open(file_path.replace(".pdf", ".txt"), "w", encoding="utf-8") as f:
-                f.write("RELATÓRIO DE MONITORAMENTO NEXUS\n")
-                f.write(f"Data: {datetime.now()}\n")
+            messagebox.showwarning("Aviso", "Biblioteca ReportLab não instalada.\nInstale com: pip install reportlab")
             return
 
-        c = pdf_canvas.Canvas(file_path, pagesize=letter)
-        c.drawString(100, 750, "Relatório de Monitoramento Nexus")
-        c.drawString(100, 730, f"Gerado em: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        c.drawString(100, 700, "Dados armazenados e estatísticas consolidadas no banco SQLite.")
-        c.save()
-        messagebox.showinfo("Sucesso", "Relatório PDF gerado com sucesso!")
-        lbl_status.config(text=f"PDF Exportado: {file_path}")
+        filepath = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF Files", "*.pdf")])
+        if not filepath: return
 
-    btn_csv = tk.Button(card_export, text="Exportar CSV (Moedas)", command=export_csv, bg=ACCENT_BLUE, fg="#11111b", font=("Segoe UI", 10, "bold"), relief="flat", pady=8)
-    btn_csv.pack(fill="x", padx=40, pady=10)
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("SELECT nome, categoria, valor_alvo, valor_atual, data_limite FROM metas_financeiras")
+        rows = c.fetchall()
+        conn.close()
 
-    btn_pdf = tk.Button(card_export, text="Exportar PDF (Consolidado)", command=export_pdf, bg=ACCENT_GREEN, fg="#11111b", font=("Segoe UI", 10, "bold"), relief="flat", pady=8)
-    btn_pdf.pack(fill="x", padx=40, pady=10)
+        c_pdf = pdf_canvas.Canvas(filepath, pagesize=letter)
+        c_pdf.setFont("Helvetica-Bold", 16)
+        c_pdf.drawString(50, 750, "Relatório Executivo de Metas Financeiras")
+        c_pdf.setFont("Helvetica", 10)
+        c_pdf.drawString(50, 730, f"Gerado em: {datetime.datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+        
+        y = 690
+        c_pdf.drawString(50, y, "Objetivo")
+        c_pdf.drawString(200, y, "Categoria")
+        c_pdf.drawString(320, y, "Alvo (R$)")
+        c_pdf.drawString(420, y, "Atual (R$)")
+        c_pdf.drawString(500, y, "%")
+        c_pdf.line(50, y-5, 550, y-5)
+        
+        y -= 25
+        for row in rows:
+            if y < 50:
+                c_pdf.showPage()
+                y = 750
+            nome, cat, alvo, atual, lim = row
+            pct = (atual / alvo * 100) if alvo > 0 else 0
+            c_pdf.drawString(50, y, str(nome)[:20])
+            c_pdf.drawString(200, y, str(cat)[:15])
+            c_pdf.drawString(320, y, f"R$ {alvo:,.2f}")
+            c_pdf.drawString(420, y, f"R$ {atual:,.2f}")
+            c_pdf.drawString(500, y, f"{pct:.0f}%")
+            y -= 20
 
-    # --- TAB 6: ACCESSIBILITY & GUIDE ---
-    tab_guide = ttk.Frame(notebook)
-    notebook.add(tab_guide, text=" ♿ Guia & Acessibilidade ")
+        c_pdf.save()
+        messagebox.showinfo("Sucesso", f"Relatório PDF gerado em:\n{filepath}")
 
-    card_guide = ttk.Frame(tab_guide, style="Card.TFrame")
-    card_guide.pack(fill="both", expand=True, padx=15, pady=15)
+    # ABA 6: GUIA & ACESSIBILIDADE
+    def build_tab_acessibilidade(self):
+        frame = tk.Frame(self.tab_acessibilidade, bg=self.bg_dark, padx=20, pady=20)
+        frame.pack(fill="both", expand=True)
 
-    guide_text = (
-        "GUIA DO USUÁRIO & RECURSOS DE ACESSIBILIDADE\n\n"
-        "Atalhos Globais do Teclado:\n"
-        " • Alt + 1 ... Alt + 6 : Navegar diretamente entre as 6 abas principais.\n"
-        " • F1 : Abrir este guia de ajuda.\n"
-        " • Ctrl + Q : Sair da aplicação.\n\n"
-        "Recursos de Acessibilidade & Áudio:\n"
-        " • Clique no botão '🔊 Voz' no canto superior para síntese de áudio (TTS).\n"
-        " • Cores com alto contraste em padrão Dark Theme Catppuccin.\n"
-        " • Duplo clique na lista de produtos para abrir diretamente no seu navegador."
-    )
+        tk.Label(frame, text="Guia de Uso & Acessibilidade", font=("Segoe UI", 14, "bold"), fg=self.accent, bg=self.bg_dark).pack(anchor="w", pady=(0, 10))
 
-    txt_guide = tk.Text(card_guide, bg=CARD_BG, fg=TEXT_MAIN, font=("Segoe UI", 10), relief="flat", wrap="word", padx=15, pady=15)
-    txt_guide.insert("1.0", guide_text)
-    txt_guide.config(state="disabled")
-    txt_guide.pack(fill="both", expand=True)
+        btn_voz = tk.Button(frame, text="🔊 Ouvir Explicação (Voz)", command=self.falar_guias, bg="#f9e2af", fg="#11111b", font=("Segoe UI", 10, "bold"), relief="flat", cursor="hand2")
+        btn_voz.pack(anchor="w", pady=(0, 15))
 
-    # --- STATUS BAR ---
-    status_frame = ttk.Frame(root)
-    status_frame.pack(fill="x", side="bottom")
-    lbl_status = ttk.Label(status_frame, text="Pronto.", font=("Segoe UI", 9), foreground=TEXT_MUTED)
-    lbl_status.pack(side="left", padx=10, pady=4)
+        self.txt_guia = tk.Text(frame, bg=self.card_bg, fg=self.fg_text, font=("Segoe UI", 10), wrap="word", padx=10, pady=10)
+        self.txt_guia.pack(fill="both", expand=True)
 
-    # Keyboard Bindings for Accessibility
-    root.bind("<Alt-Key-1>", lambda e: notebook.select(0))
-    root.bind("<Alt-Key-2>", lambda e: notebook.select(1))
-    root.bind("<Alt-Key-3>", lambda e: notebook.select(2))
-    root.bind("<Alt-Key-4>", lambda e: notebook.select(3))
-    root.bind("<Alt-Key-5>", lambda e: notebook.select(4))
-    root.bind("<Alt-Key-6>", lambda e: notebook.select(5))
-    root.bind("<F1>", lambda e: notebook.select(5))
-    root.bind("<Control-q>", lambda e: root.destroy())
+        texto_explicativo = (
+            "SOBRE O SISTEMA:\n"
+            "Este software é um gerenciador financeiro projetado para auxiliar no acompanhamento de cotações de moedas e na gestão de metas de orçamento pessoal.\n\n"
+            "COMO ELE TE AJUDA NO DIA A DIA:\n"
+            "1. Cotações e Conversões: Permite visualizar instantaneamente taxas de moedas estrangeiras (Dólar, Euro, Bitcoin) em tempo real e fazer conversões diretas.\n"
+            "2. Gestão de Metas & Orçamento: Permite cadastrar e acompanhar metas financeiras (ex: Reserva de Emergência, Viagens, Compras), monitorando o valor acumulado e a porcentagem concluída.\n"
+            "3. Gráficos & Alertas: Exibe comparativos visuais do progresso das suas metas e permite salvar alertas de preço teto.\n"
+            "4. Exportação de Dados: Gera relatórios completos em formatos CSV e PDF organizados para impressão ou backup.\n\n"
+            "TECLAS DE ATALHO DE NAVEGAÇÃO:\n"
+            "• F1: Abre esta tela de Ajuda e Acessibilidade.\n"
+            "• Alt + 1: Vai para a aba Conversor & Moedas.\n"
+            "• Alt + 2: Vai para a aba Metas & Orçamento.\n"
+            "• Alt + 3: Vai para a aba Alertas.\n"
+            "• Alt + 4: Vai para a aba Gráficos.\n"
+            "• Alt + 5: Vai para a aba Relatórios."
+        )
+        self.txt_guia.insert("1.0", texto_explicativo)
+        self.txt_guia.config(state="disabled")
 
-    root.mainloop()
+    def falar_guias(self):
+        if not PYTTSX3_AVAILABLE or not self.speech_engine:
+            messagebox.showwarning("Aviso", "Sintetizador de voz pyttsx3 não disponível.\nInstale com: pip install pyttsx3")
+            return
+        
+        def _speak():
+            self.speech_engine.say("Bem-vindo ao sistema de cotações e metas financeiras. Pressione Alt de 1 a 6 para navegar entre as abas ou F1 para retornar a esta ajuda.")
+            self.speech_engine.runAndWait()
+            
+        threading.Thread(target=_speak, daemon=True).start()
 
+
+# ==========================================
+# EXECUÇÃO DA APLICAÇÃO
+# ==========================================
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1].lower() == "--cli":
-        print("Executando em Modo CLI Fallback...")
-        init_db()
-    else:
-        try:
-            run_gui()
-        except Exception as e:
-            print(f"Erro ao iniciar GUI: {e}")
+    init_db()
+    app = MonitorApp()
+    app.mainloop()

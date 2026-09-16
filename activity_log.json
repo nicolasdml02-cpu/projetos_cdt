@@ -1,0 +1,29 @@
+[
+    {
+        "type": "currency",
+        "base": "EUR",
+        "target": "BRL",
+        "rate": 5.9363,
+        "amount": 65.89,
+        "converted": 391.142807,
+        "timestamp": "2026-09-16 13:39:29"
+    },
+    {
+        "timestamp": "2026-09-16 14:24:19",
+        "tipo": "NOVA_META",
+        "detalhes": {
+            "nome": "Casa",
+            "alvo": 530000.0,
+            "atual": 230000.0
+        }
+    },
+    {
+        "timestamp": "2026-09-16 14:26:59",
+        "tipo": "NOVA_META",
+        "detalhes": {
+            "nome": "Casa",
+            "alvo": 450000.0,
+            "atual": 250000.0
+        }
+    }
+]
