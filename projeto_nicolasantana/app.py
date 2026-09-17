@@ -127,12 +127,7 @@ class MonitorApp(tk.Tk):
         self.minsize(900, 650)
         self.configure(bg="#181825")
 
-        self.speech_engine = None
-        if PYTTSX3_AVAILABLE:
-            try:
-                self.speech_engine = pyttsx3.init()
-            except Exception:
-                self.speech_engine = None
+        self.dados_cotacoes_atuais = None
 
         self.setup_styles()
         self.create_widgets()
@@ -242,15 +237,19 @@ class MonitorApp(tk.Tk):
     def _worker_cotacoes(self):
         dados = obter_cotacoes()
         if dados:
-            texto = (
-                f"💵 Dólar (USD): R$ {float(dados['USDBRL']['bid']):.2f}   |   "
-                f"💶 Euro (EUR): R$ {float(dados['EURBRL']['bid']):.2f}\n"
-                f"💷 Libra (GBP): R$ {float(dados['GBPBRL']['bid']):.2f}   |   "
-                f"💴 Iene (JPY): R$ {float(dados['JPYBRL']['bid']):.4f}\n"
-                f"🇨🇦 CAD: R$ {float(dados['CADBRL']['bid']):.2f}         |   "
-                f"₿ Bitcoin (BTC): R$ {float(dados['BTCBRL']['bid']):,.2f}"
-            )
-            self.dados_cotacoes_atuais = dados
+            try:
+                texto = (
+                    f"💵 Dólar (USD): R$ {float(dados['USDBRL']['bid']):.2f}   |   "
+                    f"💶 Euro (EUR): R$ {float(dados['EURBRL']['bid']):.2f}\n"
+                    f"💷 Libra (GBP): R$ {float(dados['GBPBRL']['bid']):.2f}   |   "
+                    f"💴 Iene (JPY): R$ {float(dados['JPYBRL']['bid']):.4f}\n"
+                    f"🇨🇦 CAD: R$ {float(dados['CADBRL']['bid']):.2f}         |   "
+                    f"₿ Bitcoin (BTC): R$ {float(dados['BTCBRL']['bid']):,.2f}"
+                )
+                self.dados_cotacoes_atuais = dados
+            except KeyError:
+                texto = "Erro ao formatar os dados de cotações recebidos."
+                self.dados_cotacoes_atuais = None
         else:
             texto = "Não foi possível conectar com o servidor de cotações."
             self.dados_cotacoes_atuais = None
@@ -274,7 +273,7 @@ class MonitorApp(tk.Tk):
                 def get_rate(m):
                     if m == "BRL": return 1.0
                     key = f"{m}BRL"
-                    if hasattr(self, 'dados_cotacoes_atuais') and self.dados_cotacoes_atuais and key in self.dados_cotacoes_atuais:
+                    if self.dados_cotacoes_atuais and key in self.dados_cotacoes_atuais:
                         return float(self.dados_cotacoes_atuais[key]['bid'])
                     return None
 
@@ -697,14 +696,18 @@ class MonitorApp(tk.Tk):
         self.txt_guia.config(state="disabled")
 
     def falar_guias(self):
-        if not PYTTSX3_AVAILABLE or not self.speech_engine:
+        if not PYTTSX3_AVAILABLE:
             messagebox.showwarning("Aviso", "Sintetizador de voz pyttsx3 não disponível.\nInstale com: pip install pyttsx3")
             return
         
         def _speak():
-            self.speech_engine.say("Bem-vindo ao sistema de cotações e metas financeiras. Pressione Alt de 1 a 6 para navegar entre as abas ou F1 para retornar a esta ajuda.")
-            self.speech_engine.runAndWait()
-            
+            try:
+                engine = pyttsx3.init()
+                engine.say("Bem-vindo ao sistema de cotações e metas financeiras. Pressione Alt de 1 a 6 para navegar entre as abas ou F1 para retornar a esta ajuda.")
+                engine.runAndWait()
+            except Exception as e:
+                print(f"Erro no leitor de voz: {e}")
+
         threading.Thread(target=_speak, daemon=True).start()
 
 
