@@ -1,6 +1,9 @@
+import os
 import sqlite3
 
-DB_FILE = "monitor_data.db"
+# Define o caminho absoluto para evitar erros de escrita no Linux/Streamlit Cloud
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_FILE = os.path.join(BASE_DIR, "monitor_data.db")
 
 def get_connection():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
