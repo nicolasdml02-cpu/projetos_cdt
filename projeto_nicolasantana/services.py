@@ -2,16 +2,13 @@ import os
 import json
 import datetime
 import requests
-import yfinance as yf
 from database import get_connection
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_FILE = os.path.join(BASE_DIR, "activity_log.json")
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 }
 
 def log_event_json(tipo_evento, detalhe):
@@ -36,106 +33,81 @@ def log_event_json(tipo_evento, detalhe):
         print(f"Erro ao salvar JSON log: {e}")
 
 def obter_cotacoes():
-    """Busca cotações em tempo real com suporte duplo (AwesomeAPI e Fallback do yfinance)."""
-    url = "https://economia.awesomeapi.com.br/last/USD-BRL,EUR-BRL,GBP-BRL,BTC-BRL"
-    
-    # 1. Tenta buscar pela AwesomeAPI
+    """Busca cotações em tempo real usando APIs abertas livres de rate-limit na nuvem."""
+    dados_cotacoes = {}
+
+    # 1. Busca Moedas Tradicionais (USD, EUR, GBP) via ExchangeRate-API (Pública/Sem Key)
     try:
-        res = requests.get(url, headers=HEADERS, timeout=5)
+        res = requests.get("https://open.er-api.com/v6/latest/BRL", headers=HEADERS, timeout=5)
         if res.status_code == 200:
-            dados = res.json()
-            if dados:
-                return dados
-    except Exception as e:
-        print(f"[Aviso] AwesomeAPI indisponível na nuvem ({e}). Ativando fallback yfinance...")
+            rates = res.json().get("rates", {})
+            if rates:
+                if "USD" in rates and rates["USD"] > 0:
+                    val_usd = 1 / rates["USD"]
+                    dados_cotacoes["USDBRL"] = {"bid": str(round(val_usd, 2))}
+                    dados_cotacoes["USD-BRL"] = {"bid": str(round(val_usd, 2))}
 
-    # 2. Fallback via yfinance (Garante chaves normais e com hífen)
+                if "EUR" in rates and rates["EUR"] > 0:
+                    val_eur = 1 / rates["EUR"]
+                    dados_cotacoes["EURBRL"] = {"bid": str(round(val_eur, 2))}
+                    dados_cotacoes["EUR-BRL"] = {"bid": str(round(val_eur, 2))}
+
+                if "GBP" in rates and rates["GBP"] > 0:
+                    val_gbp = 1 / rates["GBP"]
+                    dados_cotacoes["GBPBRL"] = {"bid": str(round(val_gbp, 2))}
+                    dados_cotacoes["GBP-BRL"] = {"bid": str(round(val_gbp, 2))}
+    except Exception as e:
+        print(f"[Erro] Falha ao buscar moedas tradicionais: {e}")
+
+    # 2. Busca Bitcoin via CoinGecko API Pública
     try:
-        mapeamento = {
-            "USDBRL": "USDBRL=X",
-            "EURBRL": "EURBRL=X",
-            "GBPBRL": "GBPBRL=X",
-            "BTCBRL": "BTC-BRL"
-        }
-        
-        dados_formatados = {}
-        for chave, symbol in mapeamento.items():
-            try:
-                ticker = yf.Ticker(symbol)
-                preco = None
-                
-                # Tenta obter o preço mais recente
-                if hasattr(ticker, "fast_info"):
-                    preco = ticker.fast_info.get('last_price') or ticker.fast_info.get('previous_close')
-                
-                # Se for Bitcoin e ainda não capturou preço, busca o histórico recente de 1 dia
-                if not preco and "BTC" in chave:
-                    hist = ticker.history(period="1d")
-                    if not hist.empty:
-                        preco = hist['Close'].iloc[-1]
-
-                if preco:
-                    valor_str = str(round(float(preco), 2))
-                    # Salva no dicionário no formato da AwesomeAPI (ex: 'BTCBRL' e 'BTC-BRL')
-                    dados_formatados[chave] = {"bid": valor_str}
-                    chave_hifen = f"{chave[:3]}-{chave[3:]}"
-                    dados_formatados[chave_hifen] = {"bid": valor_str}
-            except Exception as err_inner:
-                print(f"Erro ao buscar {chave} via yfinance: {err_inner}")
-                
-        if dados_formatados:
-            return dados_formatados
+        res_btc = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=brl", headers=HEADERS, timeout=5)
+        if res_btc.status_code == 200:
+            btc_price = res_btc.json().get("bitcoin", {}).get("brl")
+            if btc_price:
+                dados_cotacoes["BTCBRL"] = {"bid": str(round(float(btc_price), 2))}
+                dados_cotacoes["BTC-BRL"] = {"bid": str(round(float(btc_price), 2))}
     except Exception as e:
-        print(f"[Erro] Falha geral no fallback yfinance: {e}")
+        print(f"[Erro] Falha ao buscar BTC via CoinGecko: {e}")
+
+    if dados_cotacoes:
+        return dados_cotacoes
 
     return None
 
 def converter_moeda(origem, destino, valor):
-    """Realiza a conversão de moedas entre dois pares com suporte a fallback."""
+    """Realiza conversões de moedas utilizando a API open.er-api.com e CoinGecko."""
     if origem == destino:
         return valor, 1.0
 
-    # 1. Tenta conversão direta pela AwesomeAPI
-    url_direta = f"https://economia.awesomeapi.com.br/last/{origem}-{destino}"
     try:
-        res = requests.get(url_direta, headers=HEADERS, timeout=5)
+        # Lógica especial para Bitcoin
+        if origem == "BTC" or destino == "BTC":
+            res_btc = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=brl,usd,eur,gbp", headers=HEADERS, timeout=5)
+            if res_btc.status_code == 200:
+                data = res_btc.json().get("bitcoin", {})
+                if origem == "BTC":
+                    taxa = data.get(destino.lower(), 0.0)
+                else:
+                    taxa_brl = data.get(origem.lower(), 0.0)
+                    taxa = (1 / taxa_brl) if taxa_brl > 0 else 0.0
+
+                if taxa > 0:
+                    val_conv = valor * taxa
+                    log_event_json("CONVERSAO_MOEDA", {"origem": origem, "destino": destino, "valor": valor, "resultado": val_conv})
+                    return val_conv, taxa
+
+        # Conversão de moedas fiduciárias via open.er-api
+        res = requests.get(f"https://open.er-api.com/v6/latest/{origem}", headers=HEADERS, timeout=5)
         if res.status_code == 200:
-            dados = res.json()
-            chave = f"{origem}{destino}"
-            if chave in dados:
-                taxa = float(dados[chave]["bid"])
-                valor_convertido = valor * taxa
-                log_event_json("CONVERSAO_MOEDA", {
-                    "origem": origem, "destino": destino,
-                    "valor_origem": valor, "valor_convertido": valor_convertido, "taxa": taxa
-                })
-                return valor_convertido, taxa
-    except Exception:
-        pass
-
-    # 2. Fallback via yfinance para conversões
-    try:
-        if origem == "BRL":
-            ticker = yf.Ticker(f"{destino}BRL=X")
-            preco = ticker.fast_info.get('last_price') or ticker.fast_info.get('previous_close')
-            taxa = 1 / float(preco)
-        elif destino == "BRL":
-            ticker = yf.Ticker(f"{origem}BRL=X")
-            preco = ticker.fast_info.get('last_price') or ticker.fast_info.get('previous_close')
-            taxa = float(preco)
-        else:
-            ticker = yf.Ticker(f"{origem}{destino}=X")
-            preco = ticker.fast_info.get('last_price') or ticker.fast_info.get('previous_close')
-            taxa = float(preco)
-
-        valor_convertido = valor * taxa
-        log_event_json("CONVERSAO_MOEDA", {
-            "origem": origem, "destino": destino,
-            "valor_origem": valor, "valor_convertido": valor_convertido, "taxa": taxa
-        })
-        return valor_convertido, taxa
+            rates = res.json().get("rates", {})
+            if destino in rates:
+                taxa = float(rates[destino])
+                val_conv = valor * taxa
+                log_event_json("CONVERSAO_MOEDA", {"origem": origem, "destino": destino, "valor": valor, "resultado": val_conv})
+                return val_conv, taxa
     except Exception as e:
-        print(f"[Erro] Falha ao converter via yfinance: {e}")
+        print(f"[Erro] Falha na conversão ({origem} -> {destino}): {e}")
 
     return None, None
 
