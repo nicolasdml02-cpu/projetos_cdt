@@ -20,5 +20,27 @@
             "valor_convertido": 562.65,
             "taxa": 5.115
         }
+    },
+    {
+        "timestamp": "2026-09-22 14:40:51",
+        "tipo": "CONVERSAO_MOEDA",
+        "detalhes": {
+            "origem": "USD",
+            "destino": "BRL",
+            "valor_origem": 100.0,
+            "valor_convertido": 511.54,
+            "taxa": 5.1154
+        }
+    },
+    {
+        "timestamp": "2026-09-22 14:48:45",
+        "tipo": "CONVERSAO_MOEDA",
+        "detalhes": {
+            "origem": "USD",
+            "destino": "BRL",
+            "valor_origem": 110.0,
+            "valor_convertido": 562.529,
+            "taxa": 5.1139
+        }
     }
 ]
