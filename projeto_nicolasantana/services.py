@@ -10,6 +10,8 @@ LOG_FILE = os.path.join(BASE_DIR, "activity_log.json")
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
 }
 
 def log_event_json(tipo_evento, detalhe):
@@ -34,7 +36,7 @@ def log_event_json(tipo_evento, detalhe):
         print(f"Erro ao salvar JSON log: {e}")
 
 def obter_cotacoes():
-    """Busca cotações em tempo real com fallback para yfinance formatado exatamente como a AwesomeAPI."""
+    """Busca cotações em tempo real com suporte duplo (AwesomeAPI e Fallback do yfinance)."""
     url = "https://economia.awesomeapi.com.br/last/USD-BRL,EUR-BRL,GBP-BRL,BTC-BRL"
     
     # 1. Tenta buscar pela AwesomeAPI
@@ -47,7 +49,7 @@ def obter_cotacoes():
     except Exception as e:
         print(f"[Aviso] AwesomeAPI indisponível na nuvem ({e}). Ativando fallback yfinance...")
 
-    # 2. Fallback via yfinance (Formatado estritamente como o padrão da AwesomeAPI)
+    # 2. Fallback via yfinance (Garante chaves normais e com hífen)
     try:
         mapeamento = {
             "USDBRL": "USDBRL=X",
@@ -60,15 +62,24 @@ def obter_cotacoes():
         for chave, symbol in mapeamento.items():
             try:
                 ticker = yf.Ticker(symbol)
-                preco = ticker.fast_info.last_price or ticker.fast_info.previous_close
+                preco = None
+                
+                # Tenta obter o preço mais recente
+                if hasattr(ticker, "fast_info"):
+                    preco = ticker.fast_info.get('last_price') or ticker.fast_info.get('previous_close')
+                
+                # Se for Bitcoin e ainda não capturou preço, busca o histórico recente de 1 dia
+                if not preco and "BTC" in chave:
+                    hist = ticker.history(period="1d")
+                    if not hist.empty:
+                        preco = hist['Close'].iloc[-1]
+
                 if preco:
-                    dados_formatados[chave] = {
-                        "bid": str(round(float(preco), 2 if "BTC" not in chave else 2)),
-                        "name": chave
-                    }
-                    # Adiciona também a chave com hífen para garantir compatibilidade
+                    valor_str = str(round(float(preco), 2))
+                    # Salva no dicionário no formato da AwesomeAPI (ex: 'BTCBRL' e 'BTC-BRL')
+                    dados_formatados[chave] = {"bid": valor_str}
                     chave_hifen = f"{chave[:3]}-{chave[3:]}"
-                    dados_formatados[chave_hifen] = dados_formatados[chave]
+                    dados_formatados[chave_hifen] = {"bid": valor_str}
             except Exception as err_inner:
                 print(f"Erro ao buscar {chave} via yfinance: {err_inner}")
                 
@@ -80,7 +91,7 @@ def obter_cotacoes():
     return None
 
 def converter_moeda(origem, destino, valor):
-    """Realiza a conversão de moedas com suporte a múltiplos provedores."""
+    """Realiza a conversão de moedas entre dois pares com suporte a fallback."""
     if origem == destino:
         return valor, 1.0
 
@@ -102,21 +113,20 @@ def converter_moeda(origem, destino, valor):
     except Exception:
         pass
 
-    # 2. Fallback robusto via yfinance para conversões
+    # 2. Fallback via yfinance para conversões
     try:
-        symbol = f"{origem}{destino}=X"
         if origem == "BRL":
-            symbol = f"{destino}BRL=X"
-            ticker = yf.Ticker(symbol)
-            taxa_inv = ticker.fast_info.last_price or ticker.fast_info.previous_close
-            taxa = 1 / taxa_inv
+            ticker = yf.Ticker(f"{destino}BRL=X")
+            preco = ticker.fast_info.get('last_price') or ticker.fast_info.get('previous_close')
+            taxa = 1 / float(preco)
         elif destino == "BRL":
-            symbol = f"{origem}BRL=X"
-            ticker = yf.Ticker(symbol)
-            taxa = ticker.fast_info.last_price or ticker.fast_info.previous_close
+            ticker = yf.Ticker(f"{origem}BRL=X")
+            preco = ticker.fast_info.get('last_price') or ticker.fast_info.get('previous_close')
+            taxa = float(preco)
         else:
             ticker = yf.Ticker(f"{origem}{destino}=X")
-            taxa = ticker.fast_info.last_price or ticker.fast_info.previous_close
+            preco = ticker.fast_info.get('last_price') or ticker.fast_info.get('previous_close')
+            taxa = float(preco)
 
         valor_convertido = valor * taxa
         log_event_json("CONVERSAO_MOEDA", {
