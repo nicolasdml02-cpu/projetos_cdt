@@ -34,36 +34,48 @@ def log_event_json(tipo_evento, detalhe):
         print(f"Erro ao salvar JSON log: {e}")
 
 def obter_cotacoes():
-    """Busca cotações em tempo real. Tenta AwesomeAPI; se falhar na nuvem, usa yfinance."""
+    """Busca cotações em tempo real com fallback para yfinance formatado exatamente como a AwesomeAPI."""
     url = "https://economia.awesomeapi.com.br/last/USD-BRL,EUR-BRL,GBP-BRL,BTC-BRL"
     
-    # 1. Tentativa via AwesomeAPI
+    # 1. Tenta buscar pela AwesomeAPI
     try:
         res = requests.get(url, headers=HEADERS, timeout=5)
         if res.status_code == 200:
-            return res.json()
+            dados = res.json()
+            if dados:
+                return dados
     except Exception as e:
-        print(f"[Aviso] AwesomeAPI indisponível na nuvem ({e}). Usando yfinance como fallback...")
+        print(f"[Aviso] AwesomeAPI indisponível na nuvem ({e}). Ativando fallback yfinance...")
 
-    # 2. Fallback via yfinance (Livre de bloqueios de IP de nuvem)
+    # 2. Fallback via yfinance (Formatado estritamente como o padrão da AwesomeAPI)
     try:
-        tickers = {
+        mapeamento = {
             "USDBRL": "USDBRL=X",
             "EURBRL": "EURBRL=X",
             "GBPBRL": "GBPBRL=X",
             "BTCBRL": "BTC-BRL"
         }
-        dados_yf = {}
-        for chave, symbol in tickers.items():
-            ticker = yf.Ticker(symbol)
-            # Tenta pegar o preço de fechamento/atual
-            fast_info = ticker.fast_info
-            preco = fast_info.last_price or fast_info.previous_close
-            dados_yf[chave] = {"bid": str(round(preco, 4))}
-            
-        return dados_yf
+        
+        dados_formatados = {}
+        for chave, symbol in mapeamento.items():
+            try:
+                ticker = yf.Ticker(symbol)
+                preco = ticker.fast_info.last_price or ticker.fast_info.previous_close
+                if preco:
+                    dados_formatados[chave] = {
+                        "bid": str(round(float(preco), 2 if "BTC" not in chave else 2)),
+                        "name": chave
+                    }
+                    # Adiciona também a chave com hífen para garantir compatibilidade
+                    chave_hifen = f"{chave[:3]}-{chave[3:]}"
+                    dados_formatados[chave_hifen] = dados_formatados[chave]
+            except Exception as err_inner:
+                print(f"Erro ao buscar {chave} via yfinance: {err_inner}")
+                
+        if dados_formatados:
+            return dados_formatados
     except Exception as e:
-        print(f"[Erro] Falha no fallback yfinance: {e}")
+        print(f"[Erro] Falha geral no fallback yfinance: {e}")
 
     return None
 
