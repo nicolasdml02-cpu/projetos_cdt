@@ -8,14 +8,19 @@ from database import init_db
 # Inicializa as tabelas do banco de dados
 init_db()
 
-st.set_page_config(page_title="Sistema Integrado de Monitoramento Financeiro", layout="wide")
+st.set_page_config(
+    page_title="Sistema Integrado de Monitoramento Financeiro",
+    page_icon="📊",
+    layout="wide"
+)
+
 st.title("📊 Sistema Integrado de Monitoramento Financeiro")
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "💱 Conversor & Moedas", 
-    "🎯 Metas & Orçamento", 
-    "📊 Gráficos & Resumos", 
-    "📄 Relatórios & Logs", 
+    "💱 Conversor & Moedas",
+    "🎯 Metas & Orçamento",
+    "📊 Gráficos & Resumos",
+    "📄 Relatórios & Logs",
     "♿ Guia & Acessibilidade"
 ])
 
@@ -38,26 +43,48 @@ with tab1:
     st.header("💱 Painel de Cotações & Conversor Customizado")
     
     cotacoes = services.obter_cotacoes()
+    
     if cotacoes:
         st.subheader("Cotações Principais (em relação ao BRL)")
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Dólar (USD)", f"R$ {float(cotacoes['USDBRL']['bid']):.2f}")
-        col2.metric("Euro (EUR)", f"R$ {float(cotacoes['EURBRL']['bid']):.2f}")
-        col3.metric("Libra (GBP)", f"R$ {float(cotacoes['GBPBRL']['bid']):.2f}")
-        col4.metric("Bitcoin (BTC)", f"R$ {float(cotacoes['BTCBRL']['bid']):,.2f}")
-    
+
+        # Tratamento seguro contra KeyError / ausência de dados na nuvem
+        usd = cotacoes.get('USDBRL') or cotacoes.get('USD-BRL', {})
+        eur = cotacoes.get('EURBRL') or cotacoes.get('EUR-BRL', {})
+        gbp = cotacoes.get('GBPBRL') or cotacoes.get('GBP-BRL', {})
+        btc = cotacoes.get('BTCBRL') or cotacoes.get('BTC-BRL', {})
+
+        col1.metric("Dólar (USD)", f"R$ {float(usd.get('bid', 0)):,.2f}" if usd.get('bid') else "N/A")
+        col2.metric("Euro (EUR)", f"R$ {float(eur.get('bid', 0)):,.2f}" if eur.get('bid') else "N/A")
+        col3.metric("Libra (GBP)", f"R$ {float(gbp.get('bid', 0)):,.2f}" if gbp.get('bid') else "N/A")
+        col4.metric("Bitcoin (BTC)", f"R$ {float(btc.get('bid', 0)):,.2f}" if btc.get('bid') else "N/A")
+    else:
+        st.warning("Não foi possível carregar as cotações em tempo real no momento.")
+
     st.divider()
     st.subheader("🔄 Calculadora de Conversão")
-    
     col_valor, col_de, col_para = st.columns([2, 2, 2])
+
     with col_valor:
         valor_input = st.number_input("Valor a converter:", min_value=0.01, value=100.0, step=10.0)
-    with col_de:
-        moeda_origem = st.selectbox("De (Origem):", options=list(MOEDAS.keys()), format_func=lambda c: f"{c} - {MOEDAS[c]}", index=1)
-    with col_para:
-        moeda_destino = st.selectbox("Para (Destino):", options=list(MOEDAS.keys()), format_func=lambda c: f"{c} - {MOEDAS[c]}", index=0)
 
-    if st.button("💱 Realizar Conversão", type="primary"):
+    with col_de:
+        moeda_origem = st.selectbox(
+            "De (Origem):",
+            options=list(MOEDAS.keys()),
+            format_func=lambda c: f"{c} - {MOEDAS[c]}",
+            index=1
+        )
+
+    with col_para:
+        moeda_destino = st.selectbox(
+            "Para (Destino):",
+            options=list(MOEDAS.keys()),
+            format_func=lambda c: f"{c} - {MOEDAS[c]}",
+            index=0
+        )
+
+    if st.button("🔄 Realizar Conversão", type="primary"):
         if moeda_origem == moeda_destino:
             st.info("As moedas de origem e destino selecionadas são iguais.")
         else:
@@ -65,7 +92,7 @@ with tab1:
                 resultado, taxa = services.converter_moeda(moeda_origem, moeda_destino, valor_input)
                 if resultado is not None:
                     st.success(f"### Resultado: {valor_input:,.2f} {moeda_origem} = **{resultado:,.2f} {moeda_destino}**")
-                    st.caption(f"Taxa de câmbio aplicada: 1 {moeda_origem} = {taxa:.4f} {moeda_destino}")
+                    st.caption(f"Taxa de câmbio aplicada: 1 {moeda_origem} = {taxa} {moeda_destino}")
                 else:
                     st.error("Erro ao obter cotação. Tente novamente em instantes.")
 
@@ -193,19 +220,15 @@ with tab4:
 with tab5:
     st.header("♿ Guia de Uso e Funcionalidades")
     st.markdown("""
-    ---
-    ### 💱 1. Conversor & Moedas
+    ### 1. Conversor & Moedas
     * Permite converter valores em tempo real entre as moedas globais mais utilizadas.
     
-    ---
-    ### 🎯 2. Metas & Orçamento
+    ### 2. Metas & Orçamento
     * Permite criar metas, realizar aportes financeiros dinâmicos e apagar metas com visualização via barra de progresso.
     
-    ---
-    ### 📊 3. Gráficos & Resumos
+    ### 3. Gráficos & Resumos
     * Exibe análises visuais comparativas e totais consolidados por categoria.
     
-    ---
-    ### 📄 4. Relatórios & Logs
+    ### 4. Relatórios & Logs
     * Permite o download da lista de metas em formato **CSV** e do log completo de interações do sistema em formato **JSON**.
     """)

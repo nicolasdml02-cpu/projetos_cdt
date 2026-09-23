@@ -7,6 +7,10 @@ from database import get_connection
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_FILE = os.path.join(BASE_DIR, "activity_log.json")
 
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+}
+
 def log_event_json(tipo_evento, detalhe):
     """Registra eventos no arquivo de log em formato JSON."""
     evento = {
@@ -29,56 +33,81 @@ def log_event_json(tipo_evento, detalhe):
         print(f"Erro ao salvar JSON log: {e}")
 
 def obter_cotacoes():
-    """Busca cotações em tempo real com fallback para HTTPS seguro."""
-    url = "https://economia.awesomeapi.com.br/last/USD-BRL,EUR-BRL,GBP-BRL,JPY-BRL,CAD-BRL,CHF-BRL,AUD-BRL,BTC-BRL"
-    headers = {"User-Agent": "Mozilla/5.0"}
+    """Busca cotações em tempo real usando APIs abertas livres de rate-limit na nuvem."""
+    dados_cotacoes = {}
+
+    # 1. Busca Moedas Tradicionais (USD, EUR, GBP) via ExchangeRate-API (Pública/Sem Key)
     try:
-        res = requests.get(url, headers=headers, timeout=10)
+        res = requests.get("https://open.er-api.com/v6/latest/BRL", headers=HEADERS, timeout=5)
         if res.status_code == 200:
-            return res.json()
+            rates = res.json().get("rates", {})
+            if rates:
+                if "USD" in rates and rates["USD"] > 0:
+                    val_usd = 1 / rates["USD"]
+                    dados_cotacoes["USDBRL"] = {"bid": str(round(val_usd, 2))}
+                    dados_cotacoes["USD-BRL"] = {"bid": str(round(val_usd, 2))}
+
+                if "EUR" in rates and rates["EUR"] > 0:
+                    val_eur = 1 / rates["EUR"]
+                    dados_cotacoes["EURBRL"] = {"bid": str(round(val_eur, 2))}
+                    dados_cotacoes["EUR-BRL"] = {"bid": str(round(val_eur, 2))}
+
+                if "GBP" in rates and rates["GBP"] > 0:
+                    val_gbp = 1 / rates["GBP"]
+                    dados_cotacoes["GBPBRL"] = {"bid": str(round(val_gbp, 2))}
+                    dados_cotacoes["GBP-BRL"] = {"bid": str(round(val_gbp, 2))}
     except Exception as e:
-        print(f"Erro ao obter cotações: {e}")
+        print(f"[Erro] Falha ao buscar moedas tradicionais: {e}")
+
+    # 2. Busca Bitcoin via CoinGecko API Pública
+    try:
+        res_btc = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=brl", headers=HEADERS, timeout=5)
+        if res_btc.status_code == 200:
+            btc_price = res_btc.json().get("bitcoin", {}).get("brl")
+            if btc_price:
+                dados_cotacoes["BTCBRL"] = {"bid": str(round(float(btc_price), 2))}
+                dados_cotacoes["BTC-BRL"] = {"bid": str(round(float(btc_price), 2))}
+    except Exception as e:
+        print(f"[Erro] Falha ao buscar BTC via CoinGecko: {e}")
+
+    if dados_cotacoes:
+        return dados_cotacoes
+
     return None
 
 def converter_moeda(origem, destino, valor):
-    """Realiza a conversão lidando com BRL como pivô se necessário."""
+    """Realiza conversões de moedas utilizando a API open.er-api.com e CoinGecko."""
     if origem == destino:
         return valor, 1.0
 
-    headers = {"User-Agent": "Mozilla/5.0"}
-
-    # Tenta buscar diretamente a conversão solicitada
-    url_direta = f"https://economia.awesomeapi.com.br/last/{origem}-{destino}"
     try:
-        res = requests.get(url_direta, headers=headers, timeout=8)
+        # Lógica especial para Bitcoin
+        if origem == "BTC" or destino == "BTC":
+            res_btc = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=brl,usd,eur,gbp", headers=HEADERS, timeout=5)
+            if res_btc.status_code == 200:
+                data = res_btc.json().get("bitcoin", {})
+                if origem == "BTC":
+                    taxa = data.get(destino.lower(), 0.0)
+                else:
+                    taxa_brl = data.get(origem.lower(), 0.0)
+                    taxa = (1 / taxa_brl) if taxa_brl > 0 else 0.0
+
+                if taxa > 0:
+                    val_conv = valor * taxa
+                    log_event_json("CONVERSAO_MOEDA", {"origem": origem, "destino": destino, "valor": valor, "resultado": val_conv})
+                    return val_conv, taxa
+
+        # Conversão de moedas fiduciárias via open.er-api
+        res = requests.get(f"https://open.er-api.com/v6/latest/{origem}", headers=HEADERS, timeout=5)
         if res.status_code == 200:
-            dados = res.json()
-            chave = f"{origem}{destino}"
-            if chave in dados:
-                taxa = float(dados[chave]["bid"])
-                valor_convertido = valor * taxa
-                log_event_json("CONVERSAO_MOEDA", {
-                    "origem": origem, "destino": destino,
-                    "valor_origem": valor, "valor_convertido": valor_convertido, "taxa": taxa
-                })
-                return valor_convertido, taxa
-    except Exception:
-        pass
-
-    # Se a conversão direta falhar (ex: BRL -> USD), faz o cálculo inverso usando USD-BRL ou destino-BRL
-    try:
-        if destino == "BRL":
-            res = requests.get(f"https://economia.awesomeapi.com.br/last/{origem}-BRL", headers=headers, timeout=8)
-            if res.status_code == 200:
-                taxa = float(res.json()[f"{origem}BRL"]["bid"])
-                return valor * taxa, taxa
-        elif origem == "BRL":
-            res = requests.get(f"https://economia.awesomeapi.com.br/last/{destino}-BRL", headers=headers, timeout=8)
-            if res.status_code == 200:
-                taxa = 1 / float(res.json()[f"{destino}BRL"]["bid"])
-                return valor * taxa, taxa
+            rates = res.json().get("rates", {})
+            if destino in rates:
+                taxa = float(rates[destino])
+                val_conv = valor * taxa
+                log_event_json("CONVERSAO_MOEDA", {"origem": origem, "destino": destino, "valor": valor, "resultado": val_conv})
+                return val_conv, taxa
     except Exception as e:
-        print(f"Erro na conversão secundária: {e}")
+        print(f"[Erro] Falha na conversão ({origem} -> {destino}): {e}")
 
     return None, None
 
