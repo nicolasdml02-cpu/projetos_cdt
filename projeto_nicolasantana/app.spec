@@ -7,13 +7,15 @@ from PyInstaller.utils.hooks import copy_metadata, collect_submodules
 # Coleta metadados essenciais
 datas = copy_metadata('streamlit')
 datas += copy_metadata('pandas')
+datas += copy_metadata('altair')
 
 # Inclui a pasta estática do Streamlit
 streamlit_path = os.path.dirname(streamlit.__file__)
 datas += [(os.path.join(streamlit_path, 'static'), 'streamlit/static')]
 
-# Coleta TODOS os submódulos do Streamlit automaticamente (resolve o erro de magic_funcs)
+# Coleta todos os submódulos do Streamlit e Altair automaticamente
 hidden_imports = collect_submodules('streamlit')
+hidden_imports += collect_submodules('altair')
 hidden_imports += [
     'pandas',
     'requests',
@@ -21,7 +23,7 @@ hidden_imports += [
     'json',
 ]
 
-# Inclui os arquivos do seu projeto
+# Inclui os arquivos Python do projeto
 datas += [
     ('app_web.py', '.'),
     ('services.py', '.'),
