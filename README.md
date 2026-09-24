@@ -77,7 +77,7 @@ Certifique-se de ter o **Python 3.8+** instalado em sua máquina.
 Instale todas as dependências do projeto através do `pip`:
 
 ```bash
-pip install requests pandas streamlit matplotlib reportlab pyttsx3 plyer
+pip install requests pandas streamlit matplotlib reportlab pyttsx3 plyer PyInstaller
 ```
 
 ---
